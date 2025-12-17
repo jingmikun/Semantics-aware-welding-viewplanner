@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 import open3d as o3d
+import pickle
 from pathlib import Path
 import numpy as np
 import pandas as pd
@@ -8,13 +9,21 @@ import pandas as pd
 
 def viewPointExtractor():
     """读取点云与法向量并生成候选视点列表。
-    
-    Returns:
-        viewPoints (List of array): 一个列表,其中每一个元素是一个ndarray,元素分别是(x,y,z,nx,ny,nz)
+    生成两个视点字典：一个是所有采样点，另一个是距离近似为500的视点。
+    然后通过pickle保存这两个字典。便于后续读取
     """
+    CURRDIR = Path(__file__).resolve().parent
+
     points, normals = loadRawData()
-    viewPoints = gaussianSample(points, normals)
-    return viewPoints
+    viewPoints, viewPoints_500 = gaussianSample(points, normals)
+
+    dataPathViewPoints = CURRDIR.parent / 'data' / 'viewPoints.pkl'
+    with open(dataPathViewPoints, 'wb') as f:
+        pickle.dump(viewPoints, f)
+
+    dataPathViewPoints500 = CURRDIR.parent / 'data' / 'viewPoints_500.pkl'
+    with open(dataPathViewPoints500, 'wb') as f:
+        pickle.dump(viewPoints_500, f)
 
 
 def loadRawData():
@@ -46,8 +55,10 @@ def gaussianSample(points,
         std  (float): 采样距离的标准差，默认 250/3 mm。
 
     返回：
-        sampled_points (np.ndarray): 采样得到的视点坐标，约 (N*(num_samples+1), 3)。
-        points_with_normals (list[tuple]): [(原始点, 法向量), ...] 列表，长度为 N。
+        viewpoints: 采样得到的视点坐标, 以一个字典的形式储存，其中
+            key: 视点的索引 (int)
+            value: (采样点坐标, 原始点, 法向量，距离）的元组，其中采样点坐标、原始点坐标、法向量为一个3维ndarray，距离是一个标量
+        viewpoints_500: 在字典坐标中进一步筛选的距离近似为500的视点
     """
     points = np.asarray(points, dtype=float)
     normals = np.asarray(normals, dtype=float)
@@ -82,7 +93,6 @@ def gaussianSample(points,
     normals_flat = normals_signed[valid_flat]
     distances_flat = distances[valid_flat]
 
-    # 可选：视点信息字典，如需要可在外部访问（此处不返回仅保留变量）
     viewpoints = {
         i: (sp, p, n, d)
         for i, (sp, p, n, d) in enumerate(
@@ -90,7 +100,8 @@ def gaussianSample(points,
         )
     }
     viewpoints_500 = {idx: val for idx, val in viewpoints.items() if abs(val[3] - mean) < 1e-6}
-    _ = viewpoints_500  # 占位，避免未使用变量的警告
 
-    points_with_normals = [(p, n) for p, n in zip(points, normals)]
-    return sampled_points_flat, points_with_normals
+    return viewpoints, viewpoints_500
+
+if __name__ == "__main__":
+    viewPointExtractor()
