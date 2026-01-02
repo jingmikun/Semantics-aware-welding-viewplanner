@@ -5,10 +5,6 @@ import json
 import random
 import pickle
 
-import open3d as o3d
-
-from octrees.octrees import * # octree
-
 def save_as_txt(filename, message):
     with open(filename, 'a') as file:
         if isinstance(message, dict):  # 检查 message 是否是字典类型
@@ -19,34 +15,36 @@ def save_as_txt(filename, message):
             print("Error: Cannot save_as_txt!")
 
 def calculateR(v1, v2):
-    '''依据Rodrigues公式计算三维向量v1到v2的旋转矩阵。'''
-    # 将输入的v1和v2转为单位向量
+    '''Rodrigues 公式计算三维向量 v1 旋转到 v2 的旋转矩阵。'''
+    # 转为 numpy 向量并归一化，避免 tuple 等类型无法除法
+    v1 = np.asarray(v1, dtype=float)
+    v2 = np.asarray(v2, dtype=float)
     v1 = v1 / np.linalg.norm(v1)
     v2 = v2 / np.linalg.norm(v2)
-    
-    # 计算旋转轴axis，其为v1和v2的叉积
+
     axis = np.cross(v1, v2)
-    
-    # 如果v1和v2是同方向的，返回单位矩阵
+    dot = np.dot(v1, v2)
+
     if np.linalg.norm(axis) < 1e-6:
-        return np.eye(3)
-    
-    # 计算旋转角度angle，其为v1和v2的夹角的余弦值的反余弦
-    angle = np.arccos(np.clip(np.dot(v1, v2), -1.0, 1.0))
-    
-    # 计算旋转轴的单位向量
-    axis = axis / np.linalg.norm(axis)
-    
-    # 构建旋转矩阵R的分量，依据Rodrigues旋转公式
+        if dot > 0:  # 同向
+            return np.eye(3)
+        # 反向：选择任一与 v1 不平行的轴，旋转 180 度
+        axis = np.cross(v1, [1.0, 0.0, 0.0])
+        if np.linalg.norm(axis) < 1e-6:
+            axis = np.cross(v1, [0.0, 1.0, 0.0])
+        axis = axis / np.linalg.norm(axis)
+        angle = np.pi
+    else:
+        axis = axis / np.linalg.norm(axis)
+        angle = np.arccos(np.clip(dot, -1.0, 1.0))
+
     K = np.array([
         [0, -axis[2], axis[1]],
         [axis[2], 0, -axis[0]],
         [-axis[1], axis[0], 0]
     ])
-    
-    # 使用Rodrigues公式计算旋转矩阵R
+
     R = np.eye(3) + np.sin(angle) * K + (1 - np.cos(angle)) * np.dot(K, K)
-    
     return R
 
 def R2T(R, v):
@@ -394,38 +392,4 @@ def calculateVisibility(vp, vp_euler, model, model_mesh, vertices_top, vertices_
     else:
         print("非法的mode输入！")
         return -1  # 报错
-
-def create_octree(path_viewpoints_dict, path_viewpoints_ply):
-    """
-    依据所提供的候选点云字典创建octree。
-
-    :param path_viewpoints_dict: 候选视点点云字典的路径。
-    :param path_viewpoints_ply: 候选视点点云的路径。
-    """
-    # 获取viewpoints_dict（从txt文件读取字典）
-    with open(path_viewpoints_dict, 'rb') as f:
-        viewpoints_dict = pickle.load(f)
-        # viewpoints_dict = {候选视点索引:(候选视点位置,对应表面点,对应法线向量,到对应表面点的距离)}
-    # 获取viewpoints_list
-    viewpoints_list = [] # viewpoints_list = [(tuple(x,y,z), (候选视点索引, 对应表面点, 对应法线向量, 距离表面点distance))]
-    for key in viewpoints_dict: # 遍历字典的键，输出字典
-        viewpoints_list.append((tuple(viewpoints_dict[key][0]), (key, viewpoints_dict[key][1], viewpoints_dict[key][2], viewpoints_dict[key][3])))
-    # 获取bounds
-    sampled_pcd = o3d.io.read_point_cloud(path_viewpoints_ply)
-    sampled_points = sampled_pcd.points
-    sampled_points = np.asarray(sampled_points)
-    #   使用列表解析分别提取 x, y, z 坐标
-    x_values = [point[0] for point in sampled_points]
-    y_values = [point[1] for point in sampled_points]
-    z_values = [point[2] for point in sampled_points]
-    #   找到 x, y, z 的最大最小值
-    x_min = min(x_values)-1
-    x_max = max(x_values)+1
-    y_min = min(y_values)-1
-    y_max = max(y_values)+1
-    z_min = min(z_values)-1
-    z_max = max(z_values)+1
-    # 创建并返回octree
-    bounds = ((x_min, x_max),(y_min, y_max),(z_min, z_max))
-    viewpoints_octree = octree_from_list(bounds, viewpoints_list)
-    return viewpoints_octree
+    
