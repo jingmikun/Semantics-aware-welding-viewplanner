@@ -4,6 +4,7 @@ import math
 import json
 import random
 import pickle
+from datetime import datetime
 
 def save_as_txt(filename, message):
     with open(filename, 'a') as file:
@@ -13,6 +14,19 @@ def save_as_txt(filename, message):
             file.write(message)  # 直接写入字符串
         else:
             print("Error: Cannot save_as_txt!")
+
+def saveTrajectory(trainer:str, idx: int, trajectory: dict):
+    """
+    保存一个轨迹信息，保存到log\trainer里
+    trainer: 训练器名称，包括贪婪训练器，PDQN训练器，MPDQN训练器和可能的消融实验训练器
+    idx: 实验代码
+    trajectory: 轨迹信息，是一个字典，通过pickle序列化保存
+    """
+
+    date = datetime.now().strftime("%Y%m%d")
+
+    with open(f"log/{trainer}/{date}_{idx}_trajectory.pkl", "wb") as f:
+        pickle.dump(trajectory, f)
 
 def calculateR(v1, v2):
     '''Rodrigues 公式计算三维向量 v1 旋转到 v2 的旋转矩阵。'''
@@ -263,26 +277,77 @@ def _points_in_frustum(points, planes, p_mid, eps=1e-9):
     signed = points.dot(planes[:, :3].T) + planes[:, 3]  # (N,6)
     return np.all(signed * mid_signs > 0, axis=1)
 
-def if_point_occluded(model_mesh, point, viewpoint):
-    """
-    判断表面点是否被遮挡，False表示判断表面点没有被遮挡。
+_RAYCAST_SCENE_CACHE = {}
 
-    :param model_mesh: 模型表面网格，是一个PolyData对象。
-    :param point: 所考察表面点。
-    :param viewpoint: 所考察视点。
-
-    :return: 若返回True，则证明该点被遮挡；反之则无遮挡。
+def if_points_occluded(model_mesh, points, viewpoint):
     """
+    批量判断多个表面点是否被遮挡，返回布尔数组；True 表示被遮挡。
+
+    优先使用 Open3D RaycastingScene 进行批量射线相交，若不可用则退回逐点 ray_trace。
+    """
+    points = np.asarray(points, dtype=float)
+    viewpoint = np.asarray(viewpoint, dtype=float)
+
+    # ---------- 尝试用 Open3D 加速（优先 CUDA:0，若不可用则 CPU） ----------
     try:
-        # 检查射线是否与网格相交
-        intersection = model_mesh.ray_trace(viewpoint, point, first_point = True) # intersection[0]为表面点坐标
-        if intersection is None or len(intersection[0]) == 0: # 如果没有交点，则不合理，发出警示并认为该点被遮挡
-            return True
-        if np.allclose(intersection[0], point, atol=1e-6): return False # 交点即为表面点，没有发生遮挡
-        else: return True
-    except (AttributeError, RuntimeError) as e:
-        # 处理PyVista对象销毁时的错误，默认认为点被遮挡
-        return True
+        import open3d as o3d
+
+        device = o3d.core.Device("CUDA:0") if hasattr(o3d.core, "cuda") and o3d.core.cuda.is_available() else o3d.core.Device("CPU:0")
+
+        key = (id(model_mesh), device.to_string())
+        scene = _RAYCAST_SCENE_CACHE.get(key)
+        if scene is None:
+            verts = np.asarray(model_mesh.points, dtype=np.float32)
+            faces = np.asarray(model_mesh.faces.reshape(-1, 4))[:, 1:].astype(np.int32)
+            tmesh = o3d.t.geometry.TriangleMesh(
+                o3d.core.Tensor(verts, dtype=o3d.core.Dtype.Float32, device=device),
+                o3d.core.Tensor(faces, dtype=o3d.core.Dtype.Int32, device=device),
+            )
+            scene = o3d.t.geometry.RaycastingScene()
+            _ = scene.add_triangles(tmesh)
+            _RAYCAST_SCENE_CACHE[key] = scene
+
+        dirs = points - viewpoint
+        dist = np.linalg.norm(dirs, axis=1)
+        dist_safe = np.where(dist < 1e-8, 1e-8, dist)
+        dirs_norm = dirs / dist_safe[:, None]
+        origins = np.broadcast_to(viewpoint, points.shape)
+        rays = np.hstack([origins, dirs_norm]).astype(np.float32)
+
+        result = scene.cast_rays(o3d.core.Tensor(rays, dtype=o3d.core.Dtype.Float32, device=device))
+        t_hit = result["t_hit"].numpy()  # shape (N,)
+
+        # 可见性判断逻辑：如果光线在到达目标点之前没有交到网格，则认为可见
+        # 允许目标点与网格不完全重合，只要最近交点距离 >= 目标点距离 - eps 即视为可见
+        eps = 1e-3
+        occluded = np.ones(len(points), dtype=bool)
+        hit_mask = np.isfinite(t_hit)
+        occluded[~hit_mask] = False
+        occluded[hit_mask & (t_hit >= dist - eps)] = False
+        return occluded
+    except Exception:
+        # ---------- 退回逐点 ray_trace ----------
+        occluded = np.ones(len(points), dtype=bool)
+        try:
+            model_mesh.compute_obb_tree()
+        except Exception:
+            pass
+        eps = 1e-3
+        for idx, point in enumerate(points):
+            try:
+                locs, _ = model_mesh.ray_trace(viewpoint, point, first_point=True)
+                if locs is None or len(locs) == 0:
+                    # 没有任何交点，视为可见
+                    occluded[idx] = False
+                    continue
+                # 若最近交点距离不小于目标点距离 - eps，则视为可见
+                dist_target = np.linalg.norm(point - viewpoint)
+                dist_hit = np.linalg.norm(locs[0] - viewpoint)
+                if dist_hit >= dist_target - eps:
+                    occluded[idx] = False
+            except Exception:
+                continue
+        return occluded
 
 def if_viewangle_under_threshold(n, point, viewpoint, threshold = 90.0):
     """
@@ -364,19 +429,20 @@ def calculateVisibility(vp, vp_euler, model, model_mesh, vertices_top, vertices_
     candidate_mask = in_frustum_mask & angle_mask & non_zero
     candidate_indices = np.nonzero(candidate_mask)[0]
 
+    if len(candidate_indices) == 0:
+        return (0, 0) if mode == 1 else 0
+
+    # 批量遮挡判定
+    occluded_mask = if_points_occluded(model_mesh, points_arr[candidate_indices], vp)
+
     if mode == 0:
-        for i in candidate_indices:
-            point = points_arr[i]
-            if if_point_occluded(model_mesh, point, vp):
-                continue
-            num_vis += 1
+        num_vis = int((~occluded_mask).sum())
         return num_vis
 
     elif mode == 1:
         redun = 0  # 冗余可见点数
-        for i in candidate_indices:
-            point = points_arr[i]
-            if if_point_occluded(model_mesh, point, vp):
+        for idx_local, i in enumerate(candidate_indices):
+            if occluded_mask[idx_local]:
                 continue
 
             if points_visibility[i] == 0:  # 新增可见点

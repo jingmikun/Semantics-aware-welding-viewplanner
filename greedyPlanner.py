@@ -2,7 +2,7 @@
 # @time 2026/1/2
 import random
 import numpy as np
-from concurrent.futures import ThreadPoolExecutor
+import copy
 
 from viewPointTaskEnv import viewPlanningEnv
 from tqdm import tqdm
@@ -17,7 +17,7 @@ class GreedyViewpointPlanner:
     def __init__(self, env: viewPlanningEnv):
         self.env = env
 
-    def train(self, threshold=0.95, radius=150.0, max_candidates=200, max_workers=8):
+    def train(self, iteration=20):
         """
         运行贪婪视点规划，直到覆盖率达到 threshold。
         返回轨迹字典：{step: {"viewpoint": idx, "new_points": delta, "coverage": cov}}
@@ -30,15 +30,15 @@ class GreedyViewpointPlanner:
         # 随机起点
         current = random.choice(list(self.env.viewpoint.keys()))
 
-        loop = tqdm(total=threshold, desc="Greedy coverage", unit="cov", leave=True)
-        loop.update(coverage)
+        loop = tqdm(total=iteration, desc="Greedy training", unit="iter", leave=True)
+        loop.set_postfix({"coverage": f"{coverage:.2%}"})
 
-        while coverage < threshold:
+        while step <= iteration:
             # 应用当前视点，更新可见性
             delta, redun = self.env.calculate_points_by_viewpoint(points_visibility, current)
             coverage = sum(points_visibility) / len(points_visibility)
-            loop.n = coverage
-            loop.refresh()
+            loop.update(1)
+            loop.set_postfix({"coverage": f"{coverage:.2%}"})
 
             trajectory[step] = {
                 "viewpoint": current,
@@ -49,11 +49,7 @@ class GreedyViewpointPlanner:
             step += 1
 
             # 选择下一个视点
-            nxt = self.choose_next_viewpoint(points_visibility,
-                                             center_index=current,
-                                             radius=radius,
-                                             max_candidates=max_candidates,
-                                             max_workers=max_workers)
+            nxt = self.choose_next_viewpoint(points_visibility, current, step)
             # 若没有更好的候选，结束
             if nxt == current:
                 break
@@ -61,36 +57,88 @@ class GreedyViewpointPlanner:
         loop.close()
         return trajectory
 
-    def choose_next_viewpoint(self, points_visibility, center_index, radius=150.0,
-                              max_candidates=200):
+    def choose_next_viewpoint(self, points_visibility, index, step, lr=10, r=405):
         """
-        在中心视点半径内选择“新增可见点数”最大的视点（无并行，仅向量化筛选候选）。
-        不修改传入的 points_visibility。
+        通过梯度上升的方法，贪婪地选择下一个视点
         """
-        # 坐标缓存
-        if not hasattr(self, "_coords"):
-            self._coords = np.vstack([v[0] for v in self.env.viewpoint.values()])
-            self._indices = np.array(list(self.env.viewpoint.keys()))
+        copyPointsVisibility = copy.deepcopy(points_visibility)
+        if step != 1:
+            v1, num_vis_best = self.findNearestBestViewpoint(index, copyPointsVisibility, r)
+            num_vis_center, _ = self.env.calculate_points_by_viewpoint(copy.deepcopy(points_visibility), index)
+            vref = self.gradientAscent(v1, index, lr,
+                                       num_vis_best=num_vis_best,
+                                       num_vis_center=num_vis_center,
+                                       step=step)
+        else:
+            vref = index
 
-        center_coord = self.env.viewpoint[center_index][0]
-        dists = np.linalg.norm(self._coords - center_coord, axis=1)
-        # 设最小间隔，避免选到几乎重合的视点；远优先
-        mask = (dists < radius) & (dists > 50.0)
-        cand_idx = np.nonzero(mask)[0]
-        if cand_idx.size == 0:
-            return center_index
+        nxt, _ = self.findNearestBestViewpoint(vref, points_visibility, r)
+        return nxt
 
-        # 截断“最远的若干”候选（距离降序）
-        cand_order = np.argsort(-dists[cand_idx])
-        cand_idx = cand_idx[cand_order[:max_candidates]]
-        candidate_ids = self._indices[cand_idx]
+    def findNearestBestViewpoint(self, index, points_visibility, r):
+        """
+        一个寻找距离最近而可视增益最大的视点的函数
+        """
+        listNewVP = self.buildNearestList(index, r)
 
-        # 顺序评估增益（无并行）
-        best_id, best_gain, best_redun = center_index, 0, 0
-        for vp_id in candidate_ids:
-            pv_copy = points_visibility.copy()
-            gain, redun = self.env.calculate_points_by_viewpoint(pv_copy, vp_id)
-            if gain > best_gain or (gain == best_gain and redun < best_redun):
-                best_id, best_gain, best_redun = vp_id, gain, redun
+        # 遍历得到新增可见点数量最多的下一个候选视点
+        best_idx = -1
+        best_vis = -1
 
-        return best_id if best_gain > 0 else center_index
+        for cand in listNewVP:
+            num_vis, redun = self.env.calculate_points_by_viewpoint(copy.deepcopy(points_visibility), cand)
+            if num_vis > best_vis:
+                best_idx, best_vis = cand, num_vis
+
+        if best_idx == -1:
+            best_idx, best_vis = index, 0
+
+        return best_idx, best_vis
+
+    def buildNearestList(self, index, r):
+        """
+        以 index 视点为球心、半径 r 画球，按“候选视点到球面”的距离升序选出最接近的 10 个视点索引。
+
+        距离定义：|‖vp_i - center‖ - r|，即点到球面的距离（而非到球心的距离）。
+        使用 numpy 向量化一次性计算，避免 Python for 循环。
+        """
+        # 拉取所有视点坐标 (N,3)
+        vp_coords = np.vstack([v[0] for v in self.env.viewpoint.values()])
+        center = vp_coords[index]
+
+        # 计算每个候选视点到球面的距离
+        radial_dist = np.linalg.norm(vp_coords - center, axis=1)
+        surface_dist = np.abs(radial_dist - r)
+
+        # 排除自身，按距离排序后取前 10
+        order = np.argsort(surface_dist)
+        nearest_indices = [i for i in order if i != index][:10]
+        return nearest_indices
+
+
+    def gradientAscent(self, v_best, v_center, lr, num_vis_best=0, num_vis_center=0, step=0):
+        """
+        根据中心视点与最优视点的可见增益差，沿 (v_best - v_center) 方向做一步梯度上升，返回参考视点索引。
+        """
+        vp = np.array(self.env.viewpoint[v_best][0])
+        vp_center = np.array(self.env.viewpoint[v_center][0])
+
+        diff = vp - vp_center
+        dist = np.linalg.norm(diff)
+
+        if dist == 0:
+            direction = np.zeros_like(diff)
+            l0 = 30
+        else:
+            direction = diff / dist
+            l0 = np.clip(lr * (num_vis_best - num_vis_center) / dist, 0, 30)
+
+        print(f"[s{step}] l: {l0}")
+
+        vp_ref = vp + l0 * direction
+
+        # 找到距离参考点最近的现有视点索引
+        vp_coords = np.vstack([v[0] for v in self.env.viewpoint.values()])
+        nearest_idx = int(np.argmin(np.linalg.norm(vp_coords - vp_ref, axis=1)))
+        return nearest_idx
+    

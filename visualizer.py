@@ -7,8 +7,16 @@ class visualizer():
     def __init__(self):
         pass
 
-    def paintTrajectory(trajectory):
-        pass
+    def paintTrajectory(self, trajectory):
+        """
+        给定一个trajectory类型，绘画出一些可用的图
+        这个trajectory是一个字典类型，其中
+            键：每一步的时间戳
+            值：对应时间戳下的状态信息，包括每一步的视点指标、新增可见点数、Redundance数、整体覆盖率、焊缝覆盖率
+        绘制的图：基于Seaborn库绘制：
+            1. 新增可见点数的变化图
+            2. 整体覆盖率和焊缝覆盖率的变化图
+        """
 
     def paintCloud(self, cloud):
         """

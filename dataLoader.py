@@ -21,7 +21,31 @@ def loadModel():
     return pd.read_csv(dataDIR / "rawData.csv").to_numpy()
 
 def loadMesh():
-    mesh = pv.read(dataDIR / "weld_object_v3_surface_mesh.obj")
+    """
+    Load triangle mesh for visibility computation.
+    Prefer the Poisson-reconstructed mesh we just built; if only OBJ exists, auto-convert
+    to PLY to silence VTK OBJ warnings; finally fall back to the original OBJ shipped with the repo.
+    """
+    base = dataDIR / "rawData_mesh_o3d"
+    cand_ply = base.with_suffix(".ply")
+    cand_obj = base.with_suffix(".obj")
+    mesh_path = None
+
+    if cand_ply.exists():
+        mesh_path = cand_ply
+    elif cand_obj.exists():
+        # Read OBJ once, write PLY to avoid future VTK warnings
+        mesh = pv.read(cand_obj)
+        try:
+            mesh.save(cand_ply)
+        except Exception:
+            pass
+        return mesh
+    else:
+        # Fallback: original mesh shipped with repo
+        mesh_path = dataDIR / "weld_object_v3_surface_mesh.obj"
+
+    mesh = pv.read(mesh_path)
     return mesh
 
 def downSampleViewpoint():

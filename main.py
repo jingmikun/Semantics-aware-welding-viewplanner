@@ -11,18 +11,17 @@ from visualizer import visualizer
 if __name__ == "__main__":
 
     v = visualizer()
-    # 定义一些相机参数，主要是视域体的信息
-
+    
     # 导入两个数据
     viewpoints = dataLoader.downSampleViewpoint() 
     model = dataLoader.downSampleModel()
     modelMesh = dataLoader.loadMesh()
 
     # 训练模型
-    ## 作为Baseline, 训练和报告了一个贪婪算法模型的结果
-    #greedyenv = viewPlanningEnv(model, viewpoints, modelMesh)
-    #greedyPlanner = GreedyViewpointPlanner(greedyenv)
-   # trajectory = greedyPlanner.train()
+    ## 作为Baseline, 训练和报告了一个贪婪梯度上升算法模型的结果
+    greedyenv = viewPlanningEnv(model, viewpoints, modelMesh)
+    greedyPlanner = GreedyViewpointPlanner(greedyenv)
+    trajectory = greedyPlanner.train()
 
     # 加载训练好的模型，然后进行视点规划
 
