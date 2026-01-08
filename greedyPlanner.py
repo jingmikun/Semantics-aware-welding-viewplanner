@@ -6,6 +6,7 @@ import copy
 
 from viewPointTaskEnv import viewPlanningEnv
 from tqdm import tqdm
+from utils import *
 
 """
 基于贪婪策略的视点选择器：
@@ -17,14 +18,14 @@ class GreedyViewpointPlanner:
     def __init__(self, env: viewPlanningEnv):
         self.env = env
 
-    def train(self, iteration=20):
+    def train(self, iteration=20, run_id=0):
         """
         运行贪婪视点规划，直到覆盖率达到 threshold。
         返回轨迹字典：{step: {"viewpoint": idx, "new_points": delta, "coverage": cov}}
         """
         points_visibility = self.env.get_init_points_visibility()
         coverage = 0.0
-        trajectory = {}
+        trajectory = []
         step = 1
 
         # 随机起点
@@ -37,15 +38,22 @@ class GreedyViewpointPlanner:
             # 应用当前视点，更新可见性
             delta, redun = self.env.calculate_points_by_viewpoint(points_visibility, current)
             coverage = sum(points_visibility) / len(points_visibility)
+            # 焊缝可见率：已可见焊缝点 / 焊缝总点数
+            weld_total = max(1, int(np.count_nonzero(self.env.model_points[:, 3])))
+            weldPercent = isWeld_count(points_visibility, self.env.model_points) / weld_total
+
             loop.update(1)
             loop.set_postfix({"coverage": f"{coverage:.2%}"})
 
-            trajectory[step] = {
+            trajectory.append({
+                "step": step,
                 "viewpoint": current,
                 "new_points": delta,
                 "redundant": redun,
-                "coverage": coverage
-            }
+                "coverage": coverage,
+                "weld_percent": weldPercent,
+                "run_id": run_id
+            })
             step += 1
 
             # 选择下一个视点
@@ -56,6 +64,7 @@ class GreedyViewpointPlanner:
             current = nxt
         loop.close()
         return trajectory
+
 
     def choose_next_viewpoint(self, points_visibility, index, step, lr=10, r=405):
         """

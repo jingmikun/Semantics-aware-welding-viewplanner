@@ -10,7 +10,7 @@ import pyvista as pv
 """
 
 CURRDIR = Path(__file__).resolve().parent
-dataDIR = CURRDIR / "data"
+dataDIR = CURRDIR / "Data"
 
 def loadViewpoint():
     with open(dataDIR / "viewPoints.pkl", "rb") as f:

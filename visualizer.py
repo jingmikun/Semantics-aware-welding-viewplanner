@@ -1,22 +1,81 @@
 # @author Jingmikun
 # @time 2026/1/2
 
-
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+from pathlib import Path
 
 class visualizer():
     def __init__(self):
         pass
 
-    def paintTrajectory(self, trajectory):
+    def paintGreedyTrajectory(self, trajectory):
         """
-        给定一个trajectory类型，绘画出一些可用的图
-        这个trajectory是一个字典类型，其中
-            键：每一步的时间戳
-            值：对应时间戳下的状态信息，包括每一步的视点指标、新增可见点数、Redundance数、整体覆盖率、焊缝覆盖率
-        绘制的图：基于Seaborn库绘制：
-            1. 新增可见点数的变化图
-            2. 整体覆盖率和焊缝覆盖率的变化图
+        给定一个trajectory组成类型，绘画出一些可用的图
+        这个trajectory是一个列表，其中每个元素是一个字典，其中
+        包含step, viewpoint, new_points, coverage等信息
         """
+
+        trajectory_dfs = pd.DataFrame(trajectory)
+
+        self.paintAvg(trajectory_dfs, 'step', 'new_points', "Time Step", "Viewpoint")
+        self.paintAvg(trajectory_dfs, 'step', 'coverage', "Time Step", "Coverage /%")
+        self.paintAvg(trajectory_dfs, 'step', 'weld_percent', "Time Step", "Weld Percentage /%")
+
+    def paintAvg(self, data, xVal, yVal, xlabel, ylabel):
+        """
+        画出y轴为value，x轴为step的折线图，data为DataFrame格式，包含'step'和'value'列
+        paintAvg返回的图像是浅色显示每次的轨迹，深色显示平均轨迹
+        参数：
+        data: DataFrame，包含 'step', 'value' 列
+        xVal: x轴数据列名
+        yVal: y轴数据列名
+        xlabel: x轴标签
+        ylabel: y轴标签
+        """
+        sns.set_theme(style="whitegrid")
+        plt.figure(figsize=(10, 6))
+
+        # 背景轨迹：按 run_id 区分，但全部统一为灰色
+        hue_opts = {}
+        if 'run_id' in data.columns:
+            palette = {rid: 'grey' for rid in data['run_id'].unique()}
+            hue_opts = {"hue": "run_id", "palette": palette, "legend": False}
+
+        sns.lineplot(
+            data=data,
+            x=xVal,
+            y=yVal,
+            estimator=None,
+            alpha=0.4,        # 透明度体现波动
+            linewidth=1.5,
+            zorder=1,         # 底层
+            **hue_opts
+        )
+
+        sns.lineplot(
+            data=data,
+            x=xVal,
+            y=yVal,
+            color='firebrick', # 醒目的颜色
+            linewidth=3,       # 均值线加粗
+            label='Average Performance',
+            errorbar=None,     # 关闭自动阴影
+            zorder=2           # 图层置于顶层
+        )
+
+        # 3. 装饰图表
+        plt.xlabel(xlabel, fontsize=12)
+        plt.ylabel(ylabel, fontsize=12)
+        plt.legend()
+
+        # 保存图像到 Logs/greedy/Figures 目录
+        out_dir = Path("Logs/greedy/Figures")
+        out_dir.mkdir(parents=True, exist_ok=True)
+        plt.tight_layout()
+        plt.savefig(out_dir / f"greedy_trajectory_{yVal}.png")
+        plt.close()
 
     def paintCloud(self, cloud):
         """
@@ -48,3 +107,9 @@ class visualizer():
 
         o3d.visualization.draw_geometries([pcd], window_name="Point Cloud",
                                           width=800, height=600)
+        
+    def saveFigure(self, filename):
+        """
+        保存当前图形到文件
+        """
+        plt.savefig(filename)
